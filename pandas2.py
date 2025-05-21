@@ -70,13 +70,17 @@ else:
     edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500)
 
     if st.button(f"Review Changes for {menu}"):
-        added = edited_df.merge(display_df, how='outer', indicator=True).loc[lambda x: x['_merge'] == 'left_only'].drop('_merge', axis=1)
-        deleted = display_df.merge(edited_df, how='outer', indicator=True).loc[lambda x: x['_merge'] == 'left_only'].drop('_merge', axis=1)
+        display_df['_merge_key'] = display_df.astype(str).agg('-'.join, axis=1)
+        edited_df['_merge_key'] = edited_df.astype(str).agg('-'.join, axis=1)
 
-        common = edited_df.merge(display_df, how='inner')
-        modified = pd.concat([edited_df, display_df]).drop_duplicates(keep=False)
-        modified = modified[~modified.isin(added.to_dict(orient='list')).all(axis=1)]
-        modified = modified[~modified.isin(deleted.to_dict(orient='list')).all(axis=1)]
+        added = edited_df[~edited_df['_merge_key'].isin(display_df['_merge_key'])].drop('_merge_key', axis=1)
+        deleted = display_df[~display_df['_merge_key'].isin(edited_df['_merge_key'])].drop('_merge_key', axis=1)
+
+        common_keys = set(display_df['_merge_key']).intersection(edited_df['_merge_key'])
+        common_original = display_df[display_df['_merge_key'].isin(common_keys)].drop('_merge_key', axis=1)
+        common_edited = edited_df[edited_df['_merge_key'].isin(common_keys)].drop('_merge_key', axis=1)
+
+        modified = pd.concat([common_original, common_edited]).drop_duplicates(keep=False)
 
         for df, label, active_flag in zip([added, modified, deleted], ["Added Rows", "Modified Rows", "Deleted Rows"], [True, True, False]):
             if not df.empty:
@@ -91,7 +95,7 @@ else:
     if st.button(f"Save Changes for {menu}"):
         edited_df['last_modified'] = st.session_state.login_time
         edited_df['is_active'] = True
-        save_csv_s3(edited_df, DATA_FILES[menu])
+        save_csv_s3(edited_df.drop('_merge_key', axis=1, errors='ignore'), DATA_FILES[menu])
         st.session_state[f"original_df_{menu}"] = edited_df.copy()
 
         email_subject = f"NPS table changes: {menu}"
