@@ -59,46 +59,50 @@ else:
     st.title("EDP Data Editor")
     st.subheader(menu)
 
-    if f"df_{menu}" not in st.session_state:
-        st.session_state[f"df_{menu}"] = load_csv_s3(DATA_FILES[menu])
+    if f"original_df_{menu}" not in st.session_state:
+        st.session_state[f"original_df_{menu}"] = load_csv_s3(DATA_FILES[menu])
 
-    original_df = st.session_state[f"df_{menu}"]
+    original_df = st.session_state[f"original_df_{menu}"]
     display_df = original_df.drop(columns=['last_modified', 'is_active'], errors='ignore')
 
-    edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True)
+    edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500)
 
     if st.button(f"Review Changes for {menu}"):
-        added = edited_df[~edited_df.apply(tuple,1).isin(display_df.apply(tuple,1))]
-        deleted = display_df[~display_df.apply(tuple,1).isin(edited_df.apply(tuple,1))]
-        
-        modified = pd.merge(display_df, edited_df, indicator=True, how='outer').query('_merge == "both"')
-        modified_diff = modified[modified.apply(tuple,1).duplicated(keep=False)]
-        modified_diff = modified_diff.drop_duplicates(keep=False)
+        original_tuples = set([tuple(row) for row in display_df.to_numpy()])
+        edited_tuples = set([tuple(row) for row in edited_df.to_numpy()])
+
+        added = edited_df[edited_df.apply(tuple, axis=1).isin(edited_tuples - original_tuples)]
+        deleted = display_df[display_df.apply(tuple, axis=1).isin(original_tuples - edited_tuples)]
+
+        common_tuples = original_tuples.intersection(edited_tuples)
+        modified = pd.concat([display_df, edited_df]).drop_duplicates(keep=False)
+        modified = modified[~modified.apply(tuple, axis=1).isin(added.apply(tuple, axis=1))]
+        modified = modified[~modified.apply(tuple, axis=1).isin(deleted.apply(tuple, axis=1))]
 
         if not added.empty:
             st.write("### Added Rows")
             added['last_modified'] = st.session_state.login_time
             added['is_active'] = True
-            st.dataframe(added)
+            st.dataframe(added, use_container_width=True)
 
         if not deleted.empty:
             st.write("### Deleted Rows")
             deleted['last_modified'] = st.session_state.login_time
             deleted['is_active'] = False
-            st.dataframe(deleted)
+            st.dataframe(deleted, use_container_width=True)
 
-        if not modified_diff.empty:
+        if not modified.empty:
             st.write("### Modified Rows")
-            modified_diff['last_modified'] = st.session_state.login_time
-            modified_diff['is_active'] = True
-            st.dataframe(modified_diff)
+            modified['last_modified'] = st.session_state.login_time
+            modified['is_active'] = True
+            st.dataframe(modified, use_container_width=True)
 
-        if added.empty and deleted.empty and modified_diff.empty:
+        if added.empty and deleted.empty and modified.empty:
             st.info("No changes detected.")
 
     if st.button(f"Save Changes for {menu}"):
         edited_df['last_modified'] = st.session_state.login_time
         edited_df['is_active'] = True
         save_csv_s3(edited_df, DATA_FILES[menu])
-        st.session_state[f"df_{menu}"] = edited_df.copy()
+        st.session_state[f"original_df_{menu}"] = edited_df.copy()
         st.success(f"Data for {menu} saved successfully.")
