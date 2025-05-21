@@ -70,23 +70,20 @@ else:
     edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500)
 
     if st.button(f"Review Changes for {menu}"):
-        added = edited_df.merge(display_df, indicator=True, how='outer').query('_merge=="left_only"').drop('_merge', axis=1)
-        deleted = display_df.merge(edited_df, indicator=True, how='outer').query('_merge=="left_only"').drop('_merge', axis=1)
+        added = edited_df.merge(display_df, how='outer', indicator=True).loc[lambda x: x['_merge'] == 'left_only'].drop('_merge', axis=1)
+        deleted = display_df.merge(edited_df, how='outer', indicator=True).loc[lambda x: x['_merge'] == 'left_only'].drop('_merge', axis=1)
+
+        common = edited_df.merge(display_df, how='inner')
         modified = pd.concat([edited_df, display_df]).drop_duplicates(keep=False)
-        modified = modified[~modified.isin(added.to_dict(orient='list')).all(1)]
-        modified = modified[~modified.isin(deleted.to_dict(orient='list')).all(1)]
+        modified = modified[~modified.isin(added.to_dict(orient='list')).all(axis=1)]
+        modified = modified[~modified.isin(deleted.to_dict(orient='list')).all(axis=1)]
 
-        if not added.empty:
-            st.write("### Added Rows")
-            st.dataframe(added, use_container_width=True)
-
-        if not deleted.empty:
-            st.write("### Deleted Rows")
-            st.dataframe(deleted, use_container_width=True)
-
-        if not modified.empty:
-            st.write("### Modified Rows")
-            st.dataframe(modified, use_container_width=True)
+        for df, label, active_flag in zip([added, modified, deleted], ["Added Rows", "Modified Rows", "Deleted Rows"], [True, True, False]):
+            if not df.empty:
+                df['last_modified'] = st.session_state.login_time
+                df['is_active'] = active_flag
+                st.write(f"### {label}")
+                st.dataframe(df, use_container_width=True)
 
         if added.empty and deleted.empty and modified.empty:
             st.info("No changes detected.")
