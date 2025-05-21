@@ -7,10 +7,12 @@ from datetime import datetime
 # Initialize AWS clients
 secrets_client = boto3.client('secretsmanager')
 s3_client = boto3.client('s3')
+sns_client = boto3.client('sns')
 
 # Configuration
 SECRET_NAME = 'your-secret-name'  # Update this
 BUCKET_NAME = 'your-bucket-name'  # Update this
+SNS_TOPIC_ARN = 'your-sns-topic-arn'  # Update this
 DATA_FILES = {
     "DataPoint1": "data/datapoint1.csv",
     "DataPoint2": "data/datapoint2.csv",
@@ -68,33 +70,22 @@ else:
     edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, height=500)
 
     if st.button(f"Review Changes for {menu}"):
-        original_tuples = set([tuple(row) for row in display_df.to_numpy()])
-        edited_tuples = set([tuple(row) for row in edited_df.to_numpy()])
-
-        added = edited_df[edited_df.apply(tuple, axis=1).isin(edited_tuples - original_tuples)]
-        deleted = display_df[display_df.apply(tuple, axis=1).isin(original_tuples - edited_tuples)]
-
-        common_tuples = original_tuples.intersection(edited_tuples)
-        modified = pd.concat([display_df, edited_df]).drop_duplicates(keep=False)
-        modified = modified[~modified.apply(tuple, axis=1).isin(added.apply(tuple, axis=1))]
-        modified = modified[~modified.apply(tuple, axis=1).isin(deleted.apply(tuple, axis=1))]
+        added = edited_df.merge(display_df, indicator=True, how='outer').query('_merge=="left_only"').drop('_merge', axis=1)
+        deleted = display_df.merge(edited_df, indicator=True, how='outer').query('_merge=="left_only"').drop('_merge', axis=1)
+        modified = pd.concat([edited_df, display_df]).drop_duplicates(keep=False)
+        modified = modified[~modified.isin(added.to_dict(orient='list')).all(1)]
+        modified = modified[~modified.isin(deleted.to_dict(orient='list')).all(1)]
 
         if not added.empty:
             st.write("### Added Rows")
-            added['last_modified'] = st.session_state.login_time
-            added['is_active'] = True
             st.dataframe(added, use_container_width=True)
 
         if not deleted.empty:
             st.write("### Deleted Rows")
-            deleted['last_modified'] = st.session_state.login_time
-            deleted['is_active'] = False
             st.dataframe(deleted, use_container_width=True)
 
         if not modified.empty:
             st.write("### Modified Rows")
-            modified['last_modified'] = st.session_state.login_time
-            modified['is_active'] = True
             st.dataframe(modified, use_container_width=True)
 
         if added.empty and deleted.empty and modified.empty:
@@ -105,4 +96,18 @@ else:
         edited_df['is_active'] = True
         save_csv_s3(edited_df, DATA_FILES[menu])
         st.session_state[f"original_df_{menu}"] = edited_df.copy()
-        st.success(f"Data for {menu} saved successfully.")
+
+        email_subject = f"NPS table changes: {menu}"
+        email_body = f"""Changes for table {menu}:
+
+Added Rows:\n{added.to_string(index=False)}\n
+Modified Rows:\n{modified.to_string(index=False)}\n
+Deleted Rows:\n{deleted.to_string(index=False)}"""
+
+        sns_client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=email_subject,
+            Message=email_body
+        )
+
+        st.success(f"Data for {menu} saved successfully. Notification sent.")
