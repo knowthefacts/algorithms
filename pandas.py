@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import os
 import io # For handling CSV string for S3
+import json # For parsing Secrets Manager secret
 
 # --- AWS SDK ---
-# Only import boto3 if you intend to use it (e.g., when deployed)
-# For local development, we can mock these interactions.
 USE_AWS_SERVICES = os.environ.get("USE_AWS_SERVICES", "false").lower() == "true"
 if USE_AWS_SERVICES:
     import boto3
@@ -13,30 +12,22 @@ if USE_AWS_SERVICES:
     s3_client = boto3.client('s3')
 
 # --- Configuration ---
-# For AWS Secrets Manager (replace with your actual secret name)
-SECRET_NAME = os.environ.get("APP_SECRET_NAME", "myapp/credentials") # e.g., "your-app/ecs/credentials"
-# For S3 (replace with your actual bucket and prefixes/keys)
+SECRET_NAME = os.environ.get("APP_SECRET_NAME", "myapp/credentials")
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME", "your-edp-data-bucket")
+
+# Updated CSV file configuration
 CSV_FILES_S3_KEYS = {
-    "NPS Raw Data": "data/nps_raw_data.csv",
-    "Customer Feedback": "data/customer_feedback.csv",
-    "Service Metrics": "data/service_metrics.csv"
+    "Survey Weights": f"data/survey_weights.csv",
+    "BU Allocation Target": f"data/bu_allocation_target.csv",
 }
 
-# For local testing (paths relative to app.py)
 LOCAL_CSV_PATHS = {
-    "NPS Raw Data": "datapoint1.csv",
-    "Customer Feedback": "datapoint2.csv",
-    "Service Metrics": "datapoint3.csv"
+    "Survey Weights": "survey_weights.csv",
+    "BU Allocation Target": "bu_allocation_target.csv",
 }
 
 # --- Authentication ---
 def check_credentials(username, password_attempt):
-    """
-    Checks username and password.
-    In ECS, fetches credentials from AWS Secrets Manager.
-    For local dev, uses environment variables or hardcoded (less secure).
-    """
     if USE_AWS_SERVICES:
         try:
             get_secret_value_response = secrets_manager.get_secret_value(SecretId=SECRET_NAME)
@@ -47,13 +38,15 @@ def check_credentials(username, password_attempt):
             st.error(f"Error fetching credentials from Secrets Manager: {e}")
             return False
     else:
-        # Local development: Use environment variables or hardcode (for demo only)
         valid_username = os.environ.get("STREAMLIT_USERNAME", "admin")
         valid_password = os.environ.get("STREAMLIT_PASSWORD", "password")
-        if not (valid_username and valid_password):
-            st.warning("Local credentials (STREAMLIT_USERNAME, STREAMLIT_PASSWORD) not set. Using defaults: admin/password")
+        if not (valid_username and valid_password) and not (st.secrets.get("streamlit_username") and st.secrets.get("streamlit_password")):
+            st.warning("Local credentials not set via env vars (STREAMLIT_USERNAME, STREAMLIT_PASSWORD) or st.secrets. Using defaults: admin/password")
             valid_username = "admin"
             valid_password = "password"
+        elif st.secrets.get("streamlit_username") and st.secrets.get("streamlit_password"): # Check Streamlit secrets file
+            valid_username = st.secrets["streamlit_username"]
+            valid_password = st.secrets["streamlit_password"]
 
 
     if username == valid_username and password_attempt == valid_password:
@@ -62,7 +55,6 @@ def check_credentials(username, password_attempt):
 
 # --- S3 Data Operations ---
 def load_data_from_s3(tab_name):
-    """Loads a CSV from S3 or local path into a pandas DataFrame."""
     if USE_AWS_SERVICES:
         key = CSV_FILES_S3_KEYS[tab_name]
         try:
@@ -71,28 +63,27 @@ def load_data_from_s3(tab_name):
             return df
         except Exception as e:
             st.error(f"Error loading '{key}' from S3 bucket '{S3_BUCKET}': {e}")
-            return pd.DataFrame() # Return empty dataframe on error
+            return pd.DataFrame()
     else:
-        # Local development
         filepath = LOCAL_CSV_PATHS[tab_name]
         try:
             if not os.path.exists(filepath):
                 st.warning(f"Local file {filepath} not found. Creating a dummy one for {tab_name}.")
-                # Create dummy files if they don't exist for local testing
-                if tab_name == "NPS Raw Data":
-                    pd.DataFrame({'ID':[1,2], 'Name':['A','B'], 'Score':[9,10]}).to_csv(filepath, index=False)
-                elif tab_name == "Customer Feedback":
-                    pd.DataFrame({'TicketID':[101,102], 'Comment':['Good','Okay'], 'Sentiment':['Positive','Neutral']}).to_csv(filepath, index=False)
-                else: # Service Metrics
-                    pd.DataFrame({'Month':['Jan','Feb'], 'Uptime': [99.9, 99.8], 'Tickets':[50, 60]}).to_csv(filepath, index=False)
-
+                if tab_name == "Survey Weights":
+                    pd.DataFrame({'Factor':['Age','Income'], 'Weight':[0.3,0.4], 'Category':['Demo','Financial']}).to_csv(filepath, index=False)
+                elif tab_name == "BU Allocation Target":
+                    pd.DataFrame({'BusinessUnit':['Marketing','Sales'], 'TargetPercentage':[30,40], 'Region':['NA','EMEA']}).to_csv(filepath, index=False)
+                else:
+                    pd.DataFrame().to_csv(filepath, index=False) # Empty for any other
             return pd.read_csv(filepath)
+        except FileNotFoundError:
+            st.error(f"Local file '{filepath}' not found and could not create dummy.")
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading local file '{filepath}': {e}")
             return pd.DataFrame()
 
 def save_data_to_s3(df, tab_name):
-    """Saves a pandas DataFrame to a CSV in S3 or local path."""
     if USE_AWS_SERVICES:
         key = CSV_FILES_S3_KEYS[tab_name]
         try:
@@ -105,7 +96,6 @@ def save_data_to_s3(df, tab_name):
             st.error(f"Error saving '{key}' to S3 bucket '{S3_BUCKET}': {e}")
             return False
     else:
-        # Local development
         filepath = LOCAL_CSV_PATHS[tab_name]
         try:
             df.to_csv(filepath, index=False)
@@ -119,17 +109,16 @@ def save_data_to_s3(df, tab_name):
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'show_login_form' not in st.session_state:
-    st.session_state.show_login_form = False # To control visibility of login form
+    st.session_state.show_login_form = False
 
-# For storing original and edited dataframes for each tab
 for tab_key_name in CSV_FILES_S3_KEYS.keys():
-    sanitized_key = tab_key_name.replace(" ", "_") # for valid session state keys
+    sanitized_key = tab_key_name.replace(" ", "_").lower()
     if f'df_original_{sanitized_key}' not in st.session_state:
         st.session_state[f'df_original_{sanitized_key}'] = None
     if f'df_edited_{sanitized_key}' not in st.session_state:
         st.session_state[f'df_edited_{sanitized_key}'] = None
     if f'review_mode_{sanitized_key}' not in st.session_state:
-        st.session_state[f'review_mode_{sanitized_key}'] = False # Are we reviewing changes for this tab?
+        st.session_state[f'review_mode_{sanitized_key}'] = False
 
 # --- Sidebar Navigation ---
 st.sidebar.title("Navigation")
@@ -145,7 +134,7 @@ elif menu_selection == "NPS Update":
     st.title("🔄 NPS Update")
 
     if not st.session_state.authenticated:
-        st.session_state.show_login_form = True # Ensure form is shown if not authenticated
+        st.session_state.show_login_form = True
 
     if st.session_state.show_login_form:
         with st.form("login_form"):
@@ -157,31 +146,29 @@ elif menu_selection == "NPS Update":
             if login_button:
                 if check_credentials(username, password):
                     st.session_state.authenticated = True
-                    st.session_state.show_login_form = False # Hide form on success
+                    st.session_state.show_login_form = False
                     st.success("Login successful!")
-                    st.rerun() # Rerun to reflect authenticated state
+                    st.experimental_rerun()
                 else:
                     st.error("Invalid username or password.")
     
     if st.session_state.authenticated:
         if st.sidebar.button("Logout"):
             st.session_state.authenticated = False
-            st.session_state.show_login_form = True # Show login form again
-            # Clear sensitive data from session state on logout
+            st.session_state.show_login_form = True
             for tab_key_name in CSV_FILES_S3_KEYS.keys():
-                sanitized_key = tab_key_name.replace(" ", "_")
+                sanitized_key = tab_key_name.replace(" ", "_").lower()
                 st.session_state[f'df_original_{sanitized_key}'] = None
                 st.session_state[f'df_edited_{sanitized_key}'] = None
                 st.session_state[f'review_mode_{sanitized_key}'] = False
-            st.rerun()
+            st.experimental_rerun()
 
-        # Create tabs for each data point
         tab_names = list(CSV_FILES_S3_KEYS.keys())
         tabs = st.tabs(tab_names)
 
         for i, tab_widget in enumerate(tabs):
             tab_name = tab_names[i]
-            sanitized_tab_key = tab_name.replace(" ", "_")
+            sanitized_tab_key = tab_name.replace(" ", "_").lower()
             df_original_key = f'df_original_{sanitized_tab_key}'
             df_edited_key = f'df_edited_{sanitized_tab_key}'
             review_mode_key = f'review_mode_{sanitized_tab_key}'
@@ -189,121 +176,163 @@ elif menu_selection == "NPS Update":
             with tab_widget:
                 st.subheader(f"Manage: {tab_name}")
 
-                # Load data if not already loaded or if original is None (e.g., after logout/login)
                 if st.session_state[df_original_key] is None:
-                    st.session_state[df_original_key] = load_data_from_s3(tab_name)
-                    # Initialize edited DF as a copy of original
-                    if st.session_state[df_original_key] is not None:
-                         st.session_state[df_edited_key] = st.session_state[df_original_key].copy()
-                    else: # If loading failed
+                    loaded_df = load_data_from_s3(tab_name)
+                    if loaded_df is not None and not loaded_df.empty:
+                        st.session_state[df_original_key] = loaded_df.copy(deep=True)
+                        st.session_state[df_edited_key] = loaded_df.copy(deep=True)
+                    else:
+                        st.session_state[df_original_key] = pd.DataFrame()
                         st.session_state[df_edited_key] = pd.DataFrame()
+                        st.warning(f"No data loaded for {tab_name}. Displaying empty editor.")
 
 
-                if st.session_state[df_original_key] is None or st.session_state[df_original_key].empty:
-                    st.warning(f"Could not load data for {tab_name}. Check S3/local configuration or file existence.")
-                    continue # Skip to next tab if data loading failed
+                if st.session_state[df_original_key] is None: # Should be caught by above, but as a safeguard
+                    st.error(f"Critical error: Original data for {tab_name} is None. Please reload the page or contact support.")
+                    continue
 
                 # --- Review Mode ---
                 if st.session_state[review_mode_key]:
                     st.markdown("#### Review Changes")
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
+                    original_df = st.session_state[df_original_key]
+                    edited_df = st.session_state[df_edited_key]
+
+                    # For debugging, uncomment below:
+                    # st.write("--- DEBUG: Data in Review Mode ---")
+                    # st.write("Original DF:")
+                    # st.dataframe(original_df)
+                    # st.write("Edited DF:")
+                    # st.dataframe(edited_df)
+                    # if original_df is not None and edited_df is not None:
+                    #     st.write(f"Are they identical? {original_df.equals(edited_df)}")
+                    # st.write("--- END DEBUG ---")
+
+                    col1_disp, col2_disp = st.columns(2)
+                    with col1_disp:
                         st.markdown("**Original Data**")
-                        st.dataframe(st.session_state[df_original_key], use_container_width=True)
-                    with col2:
+                        st.dataframe(original_df, use_container_width=True, height=300)
+                    with col2_disp:
                         st.markdown("**Modified Data**")
-                        st.dataframe(st.session_state[df_edited_key], use_container_width=True)
+                        st.dataframe(edited_df, use_container_width=True, height=300)
                     
-                    st.markdown("**Differences**")
-                    try:
-                        # Pandas compare needs identical indexes for proper comparison
-                        original_df_reset = st.session_state[df_original_key].reset_index(drop=True)
-                        edited_df_reset = st.session_state[df_edited_key].reset_index(drop=True)
-                        
-                        # Align columns before compare, in case columns were added/dropped
-                        common_cols = original_df_reset.columns.intersection(edited_df_reset.columns)
-                        
-                        diff_df = original_df_reset[common_cols].compare(
-                            edited_df_reset[common_cols],
-                            align_axis=1, # compare row by row
-                            keep_equal=False, # show only differences
-                            keep_shape=False # don't keep original shape if rows are identical
-                        )
-                        if not diff_df.empty:
-                             # The output of compare has multi-index columns ('self', 'other')
-                            diff_df.columns = pd.MultiIndex.from_tuples([(col[0], f"{col[1]}_orig" if col[1]=='self' else f"{col[1]}_new") for col in diff_df.columns])
-                            st.dataframe(diff_df, use_container_width=True)
-                        else:
-                            st.info("No cell-value changes detected in common columns and rows.")
+                    st.markdown("---")
+                    st.markdown("#### Summary of Structural Changes")
 
-                        # Check for added/dropped rows (simple check based on index length)
-                        if len(original_df_reset) > len(edited_df_reset):
-                            st.write(f"Rows dropped: {len(original_df_reset) - len(edited_df_reset)}")
-                        elif len(edited_df_reset) > len(original_df_reset):
-                            st.write(f"Rows added: {len(edited_df_reset) - len(original_df_reset)}")
+                    original_cols = set(original_df.columns)
+                    edited_cols = set(edited_df.columns)
+
+                    added_cols = list(edited_cols - original_cols)
+                    if added_cols:
+                        st.write(f"**Columns Added:** ` {', '.join(added_cols)} `")
+                    
+                    deleted_cols = list(original_cols - edited_cols)
+                    if deleted_cols:
+                        st.write(f"**Columns Deleted:** ` {', '.join(deleted_cols)} `")
+                    
+                    if len(original_df) != len(edited_df):
+                        st.write(f"**Number of Rows Changed:** From {len(original_df)} to {len(edited_df)}")
+                    
+                    if not added_cols and not deleted_cols and len(original_df) == len(edited_df) and original_df.equals(edited_df):
+                        st.info("No structural or value changes detected.")
+                    
+                    st.markdown("---")
+                    st.markdown("#### Cell Value Differences (within common columns & rows by position)")
+                    
+                    common_cols_list = list(original_cols.intersection(edited_cols))
+                    if not common_cols_list:
+                        st.info("No common columns to compare for cell values.")
+                    elif original_df.empty and edited_df.empty:
+                         st.info("Both original and edited data are empty.")
+                    else:
+                        # Compare based on reset indexes to see positional differences
+                        # Make copies to avoid modifying the session state DFs directly with reset_index
+                        orig_compare_df = original_df[common_cols_list].copy().reset_index(drop=True)
+                        edit_compare_df = edited_df[common_cols_list].copy().reset_index(drop=True)
                         
-                        # Check for added/dropped columns
-                        added_cols = edited_df_reset.columns.difference(original_df_reset.columns)
-                        dropped_cols = original_df_reset.columns.difference(edited_df_reset.columns)
-                        if len(added_cols) > 0:
-                            st.write(f"Columns added: {list(added_cols)}")
-                        if len(dropped_cols) > 0:
-                            st.write(f"Columns dropped: {list(dropped_cols)}")
+                        try:
+                            # Align number of rows for comparison if they differ after reset_index
+                            # This is a basic alignment; pandas compare is sensitive to shape
+                            max_rows = max(len(orig_compare_df), len(edit_compare_df))
+                            orig_compare_df = orig_compare_df.reindex(range(max_rows))
+                            edit_compare_df = edit_compare_df.reindex(range(max_rows))
 
-
-                    except Exception as e:
-                        st.error(f"Error generating diff: {e}")
-                        st.write("Original and modified data might have shapes that are too different for a simple comparison.")
+                            diff_df = orig_compare_df.compare(
+                                edit_compare_df,
+                                align_axis=1, 
+                                keep_equal=False, 
+                                keep_shape=False # True might be better to see context
+                            )
+                            if not diff_df.empty:
+                                diff_df.columns = pd.MultiIndex.from_tuples(
+                                    [(col[0], "Original" if col[1]=='self' else "New Value") for col in diff_df.columns]
+                                )
+                                st.dataframe(diff_df, use_container_width=True)
+                            else:
+                                if not original_df.equals(edited_df): # If structurally different but no cell diffs in common parts
+                                     st.info("No differing cell values found in common columns at corresponding row positions. Structural changes are noted above.")
+                                elif not added_cols and not deleted_cols and len(original_df) == len(edited_df): # If no structural changes and no value changes
+                                    pass # Already covered by "No structural or value changes detected."
+                                else: # Default if diff_df is empty but other changes occurred.
+                                    st.info("No differing cell values found in common columns at corresponding row positions.")
+                        except Exception as e:
+                            st.error(f"Error generating cell value diff: {e}")
+                            st.caption("This can happen if data structures are too dissimilar for a simple comparison.")
 
 
                     save_col, cancel_col = st.columns(2)
                     if save_col.button("Confirm and Save to Production", key=f"save_prod_{sanitized_tab_key}", type="primary"):
                         if save_data_to_s3(st.session_state[df_edited_key], tab_name):
-                            # Update original to reflect the saved state
-                            st.session_state[df_original_key] = st.session_state[df_edited_key].copy()
+                            st.session_state[df_original_key] = st.session_state[df_edited_key].copy(deep=True)
                             st.session_state[review_mode_key] = False
                             st.success(f"Changes for {tab_name} saved!")
-                            st.rerun() # Rerun to go back to edit mode and reflect changes
+                            st.experimental_rerun()
                         else:
                             st.error(f"Failed to save changes for {tab_name}.")
                     
                     if cancel_col.button("Cancel and Go Back to Editing", key=f"cancel_review_{sanitized_tab_key}"):
                         st.session_state[review_mode_key] = False
-                        st.rerun()
+                        st.experimental_rerun()
 
                 # --- Edit Mode ---
                 else:
                     st.markdown("#### Edit Data")
                     if st.session_state[df_edited_key] is not None:
-                        # The data editor modifies the DataFrame in place if it's already a session state object
-                        # So we pass a copy to data_editor for editing, then update session_state
-                        # Or, directly bind to st.session_state for convenience if careful
                         edited_df_from_editor = st.data_editor(
                             st.session_state[df_edited_key], 
-                            num_rows="dynamic", # allow adding/deleting rows
+                            num_rows="dynamic",
                             key=f"editor_{sanitized_tab_key}",
-                            use_container_width=True
+                            use_container_width=True,
+                            height=400 # Optional: set a height for the editor
                         )
-                        # Important: Update the session state with the result from data_editor
+                        # Update session state with the returned (potentially modified) dataframe
                         st.session_state[df_edited_key] = edited_df_from_editor 
 
-                        if st.button("Save for Review", key=f"review_changes_{sanitized_tab_key}"):
-                            st.session_state[review_mode_key] = True
-                            st.rerun() # Rerun to enter review mode
-                        
-                        if st.button("Reload Data from Source", key=f"reload_data_{sanitized_tab_key}"):
-                            st.session_state[df_original_key] = load_data_from_s3(tab_name)
-                            if st.session_state[df_original_key] is not None:
-                                st.session_state[df_edited_key] = st.session_state[df_original_key].copy()
-                                st.info(f"Data for {tab_name} reloaded.")
-                            else:
-                                st.error(f"Failed to reload data for {tab_name}.")
-                            st.rerun()
+                        col_b1, col_b2 = st.columns(2)
+                        with col_b1:
+                            if st.button("Save for Review", key=f"review_changes_{sanitized_tab_key}"):
+                                # Ensure df_edited_key in session state has the latest from editor
+                                # This should already be true due to the assignment above
+                                st.session_state[review_mode_key] = True
+                                st.experimental_rerun()
+                        with col_b2:
+                            if st.button("Reload Data from Source", key=f"reload_data_{sanitized_tab_key}"):
+                                loaded_df = load_data_from_s3(tab_name)
+                                if loaded_df is not None and not loaded_df.empty:
+                                    st.session_state[df_original_key] = loaded_df.copy(deep=True)
+                                    st.session_state[df_edited_key] = loaded_df.copy(deep=True)
+                                    st.info(f"Data for {tab_name} reloaded.")
+                                else:
+                                    st.session_state[df_original_key] = pd.DataFrame() # Reset to empty
+                                    st.session_state[df_edited_key] = pd.DataFrame()
+                                    st.error(f"Failed to reload data for {tab_name}, or data source is empty.")
+                                st.experimental_rerun()
+                    else:
+                        st.error(f"Edited data for {tab_name} is None. This should not happen.")
+
 
     elif st.session_state.authenticated is False and st.session_state.show_login_form is False:
-        # This case should ideally not be hit if logic is correct, but as a fallback
         st.info("Please login to access NPS Update features.")
         if st.button("Show Login Form"):
             st.session_state.show_login_form = True
-            st.rerun()
+            st.experimental_rerun()
