@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import boto3
-import difflib
 from io import StringIO
 
 # Initialize AWS clients
@@ -17,7 +16,7 @@ DATA_FILES = {
     "DataPoint3": "data/datapoint3.csv"
 }
 
-# Helper function to authenticate user
+# Authenticate user
 def authenticate(username, password):
     response = secrets_client.get_secret_value(SecretId=SECRET_NAME)
     secrets = eval(response['SecretString'])
@@ -34,56 +33,44 @@ def save_csv_s3(df, key):
     df.to_csv(csv_buffer, index=False)
     s3_client.put_object(Bucket=BUCKET_NAME, Key=key, Body=csv_buffer.getvalue())
 
-# UI
-st.sidebar.title("Navigation")
-menu = st.sidebar.radio("", ["Home", "NPS Update"])
+# Initialize session state
+if 'auth' not in st.session_state:
+    st.session_state.auth = False
 
-if menu == "Home":
-    st.title("Welcome to EDP Dashboard")
-    st.write("Still under development.")
+st.sidebar.title("EDP Dashboard")
 
-elif menu == "NPS Update":
-    if 'auth' not in st.session_state:
-        st.session_state.auth = False
+# Authentication section
+if not st.session_state.auth:
+    st.sidebar.subheader("Login")
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if authenticate(username, password):
+            st.session_state.auth = True
+            st.sidebar.success("Authenticated successfully")
+        else:
+            st.sidebar.error("Authentication failed")
+else:
+    menu = st.sidebar.radio("", list(DATA_FILES.keys()))
 
-    if not st.session_state.auth:
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if authenticate(username, password):
-                st.session_state.auth = True
-                st.success("Authenticated successfully")
-            else:
-                st.error("Authentication failed")
+    st.title("EDP Data Editor")
+    st.subheader(menu)
 
-    if st.session_state.auth:
-        tabs = st.tabs(list(DATA_FILES.keys()))
+    if f"df_{menu}" not in st.session_state:
+        st.session_state[f"df_{menu}"] = load_csv_s3(DATA_FILES[menu])
 
-        for i, (tab_name, file_key) in enumerate(DATA_FILES.items()):
-            with tabs[i]:
-                st.subheader(tab_name)
+    original_df = st.session_state[f"df_{menu}"]
+    edited_df = st.data_editor(original_df, num_rows="dynamic", use_container_width=True)
 
-                if f"df_{tab_name}" not in st.session_state:
-                    st.session_state[f"df_{tab_name}"] = load_csv_s3(file_key)
+    if st.button(f"Review Changes for {menu}"):
+        diff_df = pd.concat([original_df, edited_df]).drop_duplicates(keep=False)
+        if not diff_df.empty:
+            st.write("### Changes Detected")
+            st.dataframe(diff_df)
+        else:
+            st.info("No changes detected.")
 
-                df = st.session_state[f"df_{tab_name}"]
-                edited_df = st.data_editor(df, num_rows="dynamic", key=f"editor_{tab_name}")
-
-                if st.button(f"Review Changes for {tab_name}"):
-                    diff = difflib.unified_diff(
-                        df.to_csv(index=False).splitlines(),
-                        edited_df.to_csv(index=False).splitlines(),
-                        fromfile="original",
-                        tofile="modified",
-                        lineterm=""
-                    )
-                    diff_text = '\n'.join(diff)
-                    if diff_text:
-                        st.text_area("Review Modifications", diff_text, height=300)
-                    else:
-                        st.info("No changes detected.")
-
-                if st.button(f"Save Changes for {tab_name}"):
-                    save_csv_s3(edited_df, file_key)
-                    st.session_state[f"df_{tab_name}"] = edited_df.copy()
-                    st.success(f"Data for {tab_name} saved successfully.")
+    if st.button(f"Save Changes for {menu}"):
+        save_csv_s3(edited_df, DATA_FILES[menu])
+        st.session_state[f"df_{menu}"] = edited_df.copy()
+        st.success(f"Data for {menu} saved successfully.")
