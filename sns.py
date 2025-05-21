@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import boto3
-from io import StringIO
+from io import StringIO, BytesIO # BytesIO for reading S3 body for multiple reads
 from datetime import datetime
 import json # For safer secret parsing
 
@@ -15,16 +15,16 @@ except Exception as e:
     st.stop()
 
 # Configuration
-SECRET_NAME = 'your-secret-name'
-BUCKET_NAME = 'your-bucket-name'
-SNS_TOPIC_ARN = 'your-sns-topic-arn'
+SECRET_NAME = 'your-secret-name' # UPDATE THIS
+BUCKET_NAME = 'your-bucket-name' # UPDATE THIS
+SNS_TOPIC_ARN = 'your-sns-topic-arn' # UPDATE THIS
 DATA_FILES = {
     "Survey Weights": "data/survey_weights.csv",
     "BU Allocation Target": "data/bu_allocation_target.csv",
 }
 
 SYSTEM_COLUMNS_S3_ONLY = ['last_modified', 'modified_by']
-DATETIME_FORMAT_S3 = '%Y-%m-%d %H:%M:%S' # Define your desired format for S3
+DATETIME_FORMAT_S3 = '%Y-%m-%d %H:%M:%S'
 
 # --- Helper Functions ---
 
@@ -40,33 +40,38 @@ def authenticate(username_attempt, password_attempt):
 
 def load_csv_s3(key, bucket_name):
     try:
-        csv_obj = s3_client.get_object(Bucket=bucket_name, Key=key)
-        # Let pandas infer types, parse 'last_modified' specifically if it exists
-        # Get column names first to check if 'last_modified' is present
-        temp_df_for_cols = pd.read_csv(StringIO(csv_obj['Body'].read().decode('utf-8')), nrows=0)
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=key)
+        s3_data_bytes = s3_object['Body'].read() # Read the whole body once
+
+        # First pass to get column names (for date parsing check)
+        temp_df_for_cols = pd.read_csv(BytesIO(s3_data_bytes), nrows=0)
+        
         parse_dates_list = []
         if 'last_modified' in temp_df_for_cols.columns:
             parse_dates_list.append('last_modified')
         
-        # Reread the CSV with type inference and date parsing
-        csv_obj['Body'].seek(0) # Reset stream position
+        # Second pass to read the actual data
         df = pd.read_csv(
-            csv_obj['Body'], 
-            parse_dates=parse_dates_list if parse_dates_list else False, # Only parse if column exists
-            infer_datetime_format=True # Helps pandas guess format if not exact
+            BytesIO(s3_data_bytes), # Use the stored bytes
+            parse_dates=parse_dates_list if parse_dates_list else False,
+            infer_datetime_format=True 
         )
         
+        # Handle 'is_active' column
         if 'is_active' in df.columns:
-            # Handle various representations for robust boolean conversion
-            if df['is_active'].dtype == 'object': # If read as string
-                 df['is_active'] = df['is_active'].astype(str).str.lower().map({
-                    'true': True, '1': True, 
-                    'false': False, '0': False,
-                    '': False # Treat empty string as False
-                }).fillna(True) # Default for unmappable strings
-            df['is_active'] = df['is_active'].astype(bool)
+            if not pd.api.types.is_bool_dtype(df['is_active']):
+                true_values = ['true', '1', 't', 'yes']
+                # false_values implicitly includes empty strings and anything not in true_values
+                
+                is_active_series = df['is_active'].astype(str).str.lower()
+                df['is_active'] = is_active_series.isin(true_values)
+            else: # It's already boolean, potentially nullable
+                 if df['is_active'].isnull().any():
+                    df['is_active'] = df['is_active'].fillna(True) # Default for NaN/None booleans
+            
+            df['is_active'] = df['is_active'].astype(bool) # Ensure final type is standard bool
         else:
-            df['is_active'] = True
+            df['is_active'] = True # Add column as True if it doesn't exist
         
         return df
     except s3_client.exceptions.NoSuchKey:
@@ -82,20 +87,11 @@ def save_csv_s3(df, key, bucket_name):
         csv_buffer = StringIO()
         df_to_save = df.copy()
         
-        # Ensure 'is_active' is bool for saving
         if 'is_active' in df_to_save.columns:
             df_to_save['is_active'] = df_to_save['is_active'].astype(bool)
         
-        # Pandas to_csv handles datetime objects by default, usually to ISO 8601.
-        # If a specific format like YYYY-MM-DD HH:MM:SS is needed *in the CSV*:
-        if 'last_modified' in df_to_save.columns and pd.api.types.is_datetime64_any_dtype(df_to_save['last_modified']):
-            # If you want to ensure it's saved without timezone and in specific format:
-            # df_to_save['last_modified'] = df_to_save['last_modified'].dt.strftime(DATETIME_FORMAT_S3)
-            # However, saving as string might make reparsing harder.
-            # For now, let pandas handle datetime saving; it's usually fine.
-            pass
-
-        df_to_save.to_csv(csv_buffer, index=False, date_format=DATETIME_FORMAT_S3) # Use date_format for consistency
+        # Pandas to_csv handles datetime objects. date_format helps consistency.
+        df_to_save.to_csv(csv_buffer, index=False, date_format=DATETIME_FORMAT_S3)
         s3_client.put_object(Bucket=bucket_name, Key=key, Body=csv_buffer.getvalue())
         return True
     except Exception as e:
@@ -111,30 +107,27 @@ def calculate_hashed_row_diffs(original_df_snap, edited_df_snap):
 
     all_cols = sorted(list(set(temp_original.columns) | set(temp_edited.columns)))
     
-    temp_original_aligned = temp_original.reindex(columns=all_cols) # Keep original types for now
-    temp_edited_aligned = temp_edited.reindex(columns=all_cols)   # Keep original types
+    temp_original_aligned = temp_original.reindex(columns=all_cols)
+    temp_edited_aligned = temp_edited.reindex(columns=all_cols)
 
-    # For hashing, convert all to string. fillna('') is important here.
+    # For hashing, convert all to string. fillna('') is important.
     temp_original_for_hash = temp_original_aligned.fillna('').astype(str)
     temp_edited_for_hash = temp_edited_aligned.fillna('').astype(str)
 
-
     if not temp_original_for_hash.empty:
         temp_original_for_hash['_merge_key'] = temp_original_for_hash.agg('-'.join, axis=1)
-    else: # Should not happen if all_cols is derived correctly
+    else:
         temp_original_for_hash = pd.DataFrame(columns=all_cols + ['_merge_key'])
-
 
     if not temp_edited_for_hash.empty:
         temp_edited_for_hash['_merge_key'] = temp_edited_for_hash.agg('-'.join, axis=1)
     else:
         temp_edited_for_hash = pd.DataFrame(columns=all_cols + ['_merge_key'])
     
-    # Perform diff based on hashed keys
-    if temp_original_for_hash['_merge_key'].dropna().empty: # original was effectively empty or all NaNs
+    if temp_original_for_hash['_merge_key'].dropna().empty:
         added_rows_indices = temp_edited_aligned.index
         deleted_rows_indices = pd.Index([])
-    elif temp_edited_for_hash['_merge_key'].dropna().empty: # edited is effectively empty or all NaNs
+    elif temp_edited_for_hash['_merge_key'].dropna().empty:
         added_rows_indices = pd.Index([])
         deleted_rows_indices = temp_original_aligned.index
     else:
@@ -143,7 +136,6 @@ def calculate_hashed_row_diffs(original_df_snap, edited_df_snap):
         added_rows_indices = temp_edited_aligned[added_mask].index
         deleted_rows_indices = temp_original_aligned[deleted_mask].index
 
-    # Get the actual rows from the original snapshots (with original dtypes)
     added_rows = edited_df_snap.loc[added_rows_indices].copy()
     deleted_rows = original_df_snap.loc[deleted_rows_indices].copy()
     
@@ -174,9 +166,9 @@ if not st.session_state.auth:
         else: st.sidebar.warning("Please enter username and password.")
 else:
     st.sidebar.write(f"User: {st.session_state.current_user}")
-    st.sidebar.write(f"Login Time: {st.session_state.login_time.strftime(DATETIME_FORMAT_S3) if st.session_state.login_time else 'N/A'}") # Use defined format
+    st.sidebar.write(f"Login Time: {st.session_state.login_time.strftime(DATETIME_FORMAT_S3) if st.session_state.login_time else 'N/A'}")
     if st.sidebar.button("Logout", key="logout_button"):
-        for key_to_del in list(st.session_state.keys()): # Iterate over a copy
+        for key_to_del in list(st.session_state.keys()):
             if key_to_del not in ['auth', 'login_time', 'current_user']:
                  if key_to_del.startswith(('s3_df_', 'original_for_review_', 'edited_for_review_', 'review_mode_')):
                     del st.session_state[key_to_del]
@@ -204,35 +196,27 @@ else:
     if s3_df_key not in st.session_state:
         st.session_state[s3_df_key] = load_csv_s3(s3_key, BUCKET_NAME)
 
-    current_s3_df = st.session_state[s3_df_key] # Has inferred types, last_modified as datetime
+    current_s3_df = st.session_state[s3_df_key]
 
-    # DataFrame for editor (user-visible columns)
     df_for_editor = current_s3_df.drop(columns=SYSTEM_COLUMNS_S3_ONLY, errors='ignore').copy()
     
-    if 'is_active' not in df_for_editor.columns:
-        if df_for_editor.empty:
-            df_for_editor['is_active'] = pd.Series(dtype='bool')
-        else: # Should be added by load_csv_s3
-            df_for_editor['is_active'] = True
+    # Ensure 'is_active' is correctly typed for the editor (should be bool)
+    if 'is_active' not in df_for_editor.columns: # Should be handled by load_csv_s3
+        df_for_editor['is_active'] = True # Fallback
     df_for_editor['is_active'] = df_for_editor['is_active'].astype(bool)
 
 
     st.markdown("#### Current Data (Editable)")
-    # st.data_editor will try to infer input types for columns.
-    # For datetime columns, it should offer a date picker if pandas dtype is datetime64.
     edited_df_from_editor = st.data_editor(
-        df_for_editor, # Should have correct dtypes from load_csv_s3
+        df_for_editor,
         num_rows="dynamic", 
         use_container_width=True, 
         height=500,
         key=f"data_editor_{selected_menu}",
         column_config={
             "is_active": st.column_config.CheckboxColumn("Active", default=True)
-            # If you have actual datetime columns to edit (not system ones),
-            # you might use st.column_config.DatetimeColumn
         }
     )
-    # edited_df_from_editor will have dtypes as modified/set by the editor.
 
     if st.button(f"Review Changes for {selected_menu}", key=f"review_btn_{selected_menu}"):
         st.session_state[review_mode_key] = True
@@ -248,10 +232,10 @@ else:
         edited_snapshot = st.session_state.get(edited_for_review_key, pd.DataFrame())
 
         # --- UNCOMMENT FOR DEBUGGING THE DIFF INPUTS ---
-        # st.markdown("Debug: Original Snapshot for Diff (Types should be inferred)")
+        # st.markdown("Debug: Original Snapshot for Diff")
         # st.dataframe(original_snapshot)
         # st.write(original_snapshot.dtypes)
-        # st.markdown("Debug: Edited Snapshot for Diff (Types from editor)")
+        # st.markdown("Debug: Edited Snapshot for Diff")
         # st.dataframe(edited_snapshot)
         # st.write(edited_snapshot.dtypes)
         # --- END DEBUG ---
@@ -266,12 +250,12 @@ else:
             added_display = added_df.copy()
             added_display['last_modified (expected)'] = st.session_state.login_time.strftime(DATETIME_FORMAT_S3) if st.session_state.login_time else "N/A"
             added_display['modified_by (expected)'] = st.session_state.current_user if st.session_state.current_user else "N/A"
-            st.dataframe(added_display, use_container_width=True) # Display with original types
+            st.dataframe(added_display, use_container_width=True)
 
         if not deleted_df.empty:
             no_changes_detected_flag = False
             st.markdown("#### Deleted Rows (or old versions of modified rows)")
-            st.dataframe(deleted_df, use_container_width=True) # Display with original types
+            st.dataframe(deleted_df, use_container_width=True)
         
         st.info(
             "**Understanding Changes:** "
@@ -281,29 +265,26 @@ else:
         )
 
         if no_changes_detected_flag:
-            # For equality check, convert to string to mimic hashing behavior
             original_for_eq = original_snapshot.fillna('').astype(str)
             edited_for_eq = edited_snapshot.fillna('').astype(str)
             if original_for_eq.equals(edited_for_eq):
                 st.info("No changes detected compared to the data presented for editing.")
             else:
-                st.warning("Snapshots appear different by content, but diff logic found no distinct adds/deletes. This could be due to subtle data changes (e.g., whitespace, float precision) not altering the hash, or an issue in hashing. Review debug dataframes if uncommented.")
-
+                st.warning("Snapshots appear different by content, but diff logic found no distinct adds/deletes. Review debug dataframes if uncommented.")
 
         col_save, col_cancel_rev = st.columns(2)
         with col_save:
             if st.button(f"Confirm and Save Changes", key=f"save_btn_{selected_menu}"):
-                df_to_save_content = edited_snapshot.copy() # Dtypes from editor
+                df_to_save_content = edited_snapshot.copy()
 
                 final_df_to_s3 = df_to_save_content.copy()
                 current_time_for_save = datetime.now()
-                final_df_to_s3['last_modified'] = current_time_for_save # This is a datetime object
+                final_df_to_s3['last_modified'] = current_time_for_save
                 final_df_to_s3['modified_by'] = st.session_state.current_user if st.session_state.current_user else "Unknown"
                 final_df_to_s3['is_active'] = final_df_to_s3['is_active'].astype(bool)
 
                 if save_csv_s3(final_df_to_s3, s3_key, BUCKET_NAME):
                     st.success(f"Data for {selected_menu} saved successfully.")
-                    # Update session state with the DataFrame that includes system cols and correct types
                     st.session_state[s3_df_key] = final_df_to_s3.copy() 
 
                     sns_added, sns_deleted = calculate_hashed_row_diffs(original_snapshot, edited_snapshot)
@@ -311,11 +292,10 @@ else:
                     email_subject = f"EDP Data Change: {selected_menu} by {st.session_state.current_user}"
                     email_body = (
                         f"User '{st.session_state.current_user}' saved changes to '{selected_menu}' "
-                        f"at {current_time_for_save.strftime(DATETIME_FORMAT_S3)}.\n" # Use defined format
+                        f"at {current_time_for_save.strftime(DATETIME_FORMAT_S3)}.\n"
                         f"File: s3://{BUCKET_NAME}/{s3_key}\n\n"
                     )
                     if not sns_added.empty:
-                        # For email, convert to string for reliable text representation
                         email_body += f"--- Rows Added / New Versions of Modified Rows ---\n{sns_added.fillna('').astype(str).to_string(index=False)}\n\n"
                     if not sns_deleted.empty:
                         email_body += f"--- Rows Deleted / Old Versions of Modified Rows ---\n{sns_deleted.fillna('').astype(str).to_string(index=False)}\n\n"
