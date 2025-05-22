@@ -3,30 +3,43 @@ import boto3
 import pandas as pd
 import io
 
-st.title("Simple ECS Streamlit App")
+st.title("ECS Streamlit App with Dynamic Inputs")
 
-if st.button("Fetch and Display CSV from S3"):
-    s3 = boto3.client('s3')
-    bucket_name = "your-bucket-name"
-    file_key = "path/to/your/file.csv"
-    
-    try:
-        response = s3.get_object(Bucket=bucket_name, Key=file_key)
-        df = pd.read_csv(io.BytesIO(response['Body'].read()))
-        st.dataframe(df)
-    except Exception as e:
-        st.error(f"Error fetching CSV: {e}")
+# S3 inputs
+st.subheader("Fetch CSV from S3")
+bucket_name = st.text_input("S3 Bucket Name")
+file_key = st.text_input("CSV File Path in S3")
+
+if st.button("Fetch and Display CSV"):
+    if bucket_name and file_key:
+        try:
+            s3 = boto3.client('s3')
+            response = s3.get_object(Bucket=bucket_name, Key=file_key)
+            df = pd.read_csv(io.BytesIO(response['Body'].read()))
+            st.dataframe(df)
+        except Exception as e:
+            st.error(f"Error fetching CSV: {e}")
+    else:
+        st.warning("Please provide both Bucket Name and File Path")
+
+st.divider()
+
+# SNS inputs
+st.subheader("Send SNS Email")
+sns_topic_arn = st.text_input("SNS Topic ARN")
+email_message = st.text_area("Email Message", value="Hi")
 
 if st.button("Send SNS Email"):
-    sns = boto3.client('sns', region_name='us-east-1')
-    topic_arn = "arn:aws:sns:us-east-1:your-account-id:your-topic-name"
-    
-    try:
-        sns.publish(
-            TopicArn=topic_arn,
-            Subject="Test Message from Streamlit App",
-            Message="Hi"
-        )
-        st.success("SNS email sent successfully!")
-    except Exception as e:
-        st.error(f"Error sending SNS message: {e}")
+    if sns_topic_arn and email_message:
+        try:
+            sns = boto3.client('sns')
+            sns.publish(
+                TopicArn=sns_topic_arn,
+                Subject="Message from Streamlit App",
+                Message=email_message
+            )
+            st.success("SNS email sent successfully!")
+        except Exception as e:
+            st.error(f"Error sending SNS message: {e}")
+    else:
+        st.warning("Please provide SNS Topic ARN and Email Message")
