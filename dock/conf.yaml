@@ -1,0 +1,28 @@
+# Table configuration for DB2 data extraction
+tables:
+  - name: "employees"
+    query: "SELECT * FROM SCHEMA.EMPLOYEES WHERE LAST_UPDATED >= CURRENT_DATE - 7 DAYS"
+    output:
+      bucket: "your-output-bucket"
+      prefix: "data/employees"
+      format: "parquet"
+  
+  - name: "sales_data"
+    query: "SELECT SALE_ID, CUSTOMER_ID, AMOUNT, SALE_DATE FROM SCHEMA.SALES WHERE SALE_DATE >= CURRENT_DATE - 30 DAYS"
+    output:
+      bucket: "your-output-bucket"
+      prefix: "data/sales"
+      format: "csv"
+  
+  - name: "inventory"
+    query: "SELECT PRODUCT_ID, QUANTITY, WAREHOUSE_ID, LAST_UPDATED FROM SCHEMA.INVENTORY"
+    output:
+      bucket: "your-output-bucket"
+      prefix: "data/inventory"
+      format: "parquet"
+
+# Global settings (optional)
+settings:
+  batch_size: 10000
+  timeout: 300
+  retry_attempts: 3
