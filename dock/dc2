@@ -1,0 +1,34 @@
+FROM python:3.11-slim
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    gcc \
+    g++ \
+    libssl-dev \
+    libffi-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables for Db2 CLI driver
+ENV IBM_DB_HOME=/opt/ibm/db2/clidriver
+ENV LD_LIBRARY_PATH=$IBM_DB_HOME/lib
+ENV PATH=$IBM_DB_HOME/bin:$PATH
+
+# Download and install Db2 CLI driver
+RUN mkdir -p /opt/ibm/db2 && \
+    cd /opt/ibm/db2 && \
+    wget https://public.dhe.ibm.com/ibmdl/export/pub/software/data/db2/drivers/odbc_cli/linuxx64_odbc_cli.tar.gz && \
+    tar -xzf linuxx64_odbc_cli.tar.gz && \
+    rm linuxx64_odbc_cli.tar.gz
+
+# Install ibm_db Python package (will compile against CLI driver)
+RUN pip install --no-cache-dir ibm_db
+
+# Optional: Copy your app code
+WORKDIR /app
+COPY . .
+
+# Set entrypoint or CMD
+CMD ["python", "your_script.py"]
