@@ -1,0 +1,37 @@
+{
+    "family": "streamlit-data-editor-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "512",
+    "memory": "1024",
+    "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+    "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/streamlit-task-role",
+    "containerDefinitions": [
+        {
+            "name": "streamlit-container",
+            "image": "YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/streamlit-data-editor:latest",
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 8501,
+                    "protocol": "tcp"
+                }
+            ],
+
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/streamlit-data-editor",
+                    "awslogs-region": "YOUR_REGION",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "environment": [
+                {
+                    "name": "AWS_DEFAULT_REGION",
+                    "value": "YOUR_REGION"
+                }
+            ]
+        }
+    ]
+}
