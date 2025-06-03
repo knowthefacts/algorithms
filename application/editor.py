@@ -230,20 +230,76 @@ def handle_dataset_editing(bucket_name, key, dataset_id):
             last_modified = datetime.now().strftime("%Y-%m-%d %H:%M")
             st.metric("Last Loaded", last_modified)
         
-        # Data editor
+        # Data editor - hide last_modified column
         st.subheader("📝 Edit Data")
-        edited_df = st.data_editor(
-            df,
+        
+        # Create display dataframe without last_modified column
+        display_columns = [col for col in df.columns if col != 'last_modified']
+        display_df = df[display_columns].copy()
+        
+        edited_display_df = st.data_editor(
+            display_df,
             use_container_width=True,
             num_rows="dynamic",
             key=f"{dataset_id}_editor"
         )
         
+        # Reconstruct full dataframe with last_modified column
+        if 'last_modified' in df.columns:
+            # For existing rows, keep original last_modified values
+            # For new rows, set current timestamp
+            edited_df = edited_display_df.copy()
+            
+            # Add back last_modified column
+            if len(edited_display_df) <= len(df):
+                # No new rows added, keep original last_modified values
+                edited_df['last_modified'] = df['last_modified'].iloc[:len(edited_display_df)].values
+            else:
+                # New rows added
+                original_last_modified = df['last_modified'].tolist()
+                new_rows_count = len(edited_display_df) - len(df)
+                current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Extend with current timestamp for new rows
+                extended_last_modified = original_last_modified + [current_timestamp] * new_rows_count
+                edited_df['last_modified'] = extended_last_modified[:len(edited_display_df)]
+            
+            # Update last_modified for changed rows
+            for idx in range(min(len(df), len(edited_display_df))):
+                original_row = df[display_columns].iloc[idx]
+                edited_row = edited_display_df.iloc[idx]
+                
+                # Check if row has changed
+                if not original_row.equals(edited_row):
+                    edited_df.loc[idx, 'last_modified'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            edited_df = edited_display_df.copy()
+        
         # Update session state
         st.session_state[f"{dataset_id}_data"] = edited_df
         
-        # Show changes
-        if not edited_df.equals(st.session_state[f"{dataset_id}_original"]):
+        # Show changes (compare only visible columns for change detection)
+        original_display = st.session_state[f"{dataset_id}_original"][display_columns] if 'last_modified' in st.session_state[f"{dataset_id}_original"].columns else st.session_state[f"{dataset_id}_original"]
+        current_display = edited_display_df
+        
+        if not current_display.equals(original_display):
+            st.info("📝 You have unsaved changes!")
+            
+            # Show what changed
+            with st.expander("🔍 View Changes"):
+                st.write("**Changes detected in:**")
+                for idx in range(min(len(original_display), len(current_display))):
+                    if idx < len(original_display) and not original_display.iloc[idx].equals(current_display.iloc[idx]):
+                        st.write(f"• Row {idx + 1}")
+                
+                if len(current_display) > len(original_display):
+                    new_rows = len(current_display) - len(original_display)
+                    st.write(f"• {new_rows} new row(s) added")
+                elif len(current_display) < len(original_display):
+                    deleted_rows = len(original_display) - len(current_display)
+                    st.write(f"• {deleted_rows} row(s) deleted")
+            st.info("📝 You have unsaved changes!")
+            
             st.info("📝 You have unsaved changes!")
             
             # Save button
@@ -262,6 +318,8 @@ def handle_dataset_editing(bucket_name, key, dataset_id):
                 if st.button(f"🔄 Reset Changes", key=f"reset_{dataset_id}"):
                     st.session_state[f"{dataset_id}_data"] = st.session_state[f"{dataset_id}_original"].copy()
                     st.rerun()
+        else:
+            st.success("✅ No unsaved changes")
         
         # Data preview
         with st.expander("📊 Data Preview & Statistics"):
