@@ -47,5 +47,12 @@ Storing data as raw files (Parquet, CSV, etc.) on S3 or using basic S3 table for
 
 **Summary:**
 Apache Iceberg is the preferred choice for large, fast analytics in data lakes due to its transactional integrity, schema flexibility, and efficient querying. It overcomes the limitations of traditional S3 table formats and integrates smoothly with AWS analytics services, making it ideal for enterprise-scale data platforms.
+**Cost Considerations**
+Storage Cost: Using Iceberg with AWS S3 Tables increases storage costs by about 15–17% compared to standard S3 buckets (e.g., $0.0265/GB/month for S3 Tables vs. $0.023/GB/month for standard S3). For a 1TB data lake, this is a small absolute difference (about $3/month).
 
+Request Costs: PUT and GET request pricing remains the same as standard S3 ($0.005 per 1,000 PUTs, $0.0004 per 1,000 GETs).
+
+Compaction and Monitoring: Additional charges for automated compaction ($0.05/GB processed) and monitoring ($0.025 per 1,000 objects), but these are typically minor compared to storage.
+
+Performance Tradeoff: The higher storage cost brings significant performance benefits—up to 3x faster queries and 10x higher transaction throughput—plus automated maintenance, which can reduce operational costs and engineering effort
 ---
