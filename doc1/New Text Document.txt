@@ -1,0 +1,237 @@
+Investment Data Product API Design
+Overview
+API design for accessing investment domain data from AthenaDB and S3 Iceberg format, providing metadata discovery and query capabilities.
+Core Requirements
+
+Access metadata (databases, tables, columns)
+Execute queries on individual tables
+Execute queries joining multiple tables
+Support both AthenaDB and S3 Iceberg data sources
+
+API Structure
+1. Metadata Operations
+Get Available Databases
+GET /databases
+
+Returns list of all accessible databases
+Includes database name, description, table count, data source type
+Optional filters: environment, data source type
+
+Get Tables in Database
+GET /databases/{database_name}/tables
+
+Returns all tables in specified database
+Includes table metadata: name, type, row count, size, last updated
+Optional filters: table type, investment domain
+
+Get Table Schema
+GET /tables/{table_name}/schema
+
+Returns detailed column information
+Column details: name, data type, nullable, description
+Includes primary keys, foreign keys, indexes
+Optional: include statistics, data lineage
+
+Search Metadata
+GET /search?q={search_term}&type={database|table|column}
+
+Search across all metadata objects
+Returns matching databases, tables, or columns
+Includes relevance scoring
+
+2. Query Operations
+Execute Query
+POST /query/execute
+Body: {
+  "sql": "SELECT * FROM portfolio_positions WHERE date = '2024-01-01'",
+  "database": "investment_prod",
+  "limit": 1000,
+  "async": false
+}
+
+Executes SQL queries against data
+Supports both sync and async execution
+Returns query results, execution metadata
+Includes cost estimation and performance metrics
+
+Validate Query
+POST /query/validate
+Body: {
+  "sql": "SELECT * FROM invalid_table",
+  "database": "investment_prod"
+}
+
+Validates SQL syntax without execution
+Checks table/column permissions
+Returns validation errors and warnings
+Provides cost estimation
+
+Query Job Status (for async queries)
+GET /query/jobs/{job_id}
+
+Track status of long-running queries
+Returns progress, estimated completion time
+Provides results when completed
+
+Query History
+GET /query/history?limit=50&status=completed
+
+User's query execution history
+Includes SQL, execution time, cost, status
+Supports filtering and pagination
+
+3. Advanced Features
+Multi-Table Joins
+
+Support complex SQL with JOINs across tables
+Automatic optimization for cross-database queries
+Handle different data formats (Iceberg/Athena) transparently
+
+Data Export
+POST /export/query
+Body: {
+  "sql": "SELECT * FROM large_dataset",
+  "format": "parquet",
+  "destination": {"type": "s3", "path": "s3://exports/data.parquet"}
+}
+
+Export query results to various formats
+Support large dataset exports to S3
+Compression and partitioning options
+
+Data Models
+Database Object
+
+name: Database identifier
+description: Human-readable description
+environment: prod/staging/dev
+data_source: athena/iceberg
+table_count: Number of tables
+created_at, updated_at: Timestamps
+
+Table Object
+
+name: Table identifier
+database: Parent database
+description: Table purpose
+table_type: fact/dimension/bridge/lookup
+domain: equities/fixed_income/derivatives/alternatives
+column_count: Number of columns
+row_count: Estimated rows
+size_bytes: Storage size
+format: iceberg/parquet/orc
+partitioned: Boolean
+partition_keys: List of partition columns
+owner: Data owner/team
+tags: Categorization tags
+
+Column Object
+
+name: Column identifier
+data_type: SQL data type
+nullable: Boolean
+description: Column purpose
+business_name: User-friendly name
+pii: Contains personal data
+sensitive: Contains sensitive data
+domain_values: Valid values for categorical data
+statistics: min/max/distinct_count/null_count
+
+Query Response
+
+query_id: Unique identifier
+status: completed/running/failed
+columns: Schema information
+data: Result rows
+row_count: Number of rows returned
+execution_time_ms: Performance metric
+bytes_scanned: Data processed
+cost_usd: Query cost
+cache_hit: Whether cached results used
+
+Investment Domain Specific Features
+Table Categorization
+
+Fact Tables: transactions, positions, prices, returns
+Dimension Tables: securities, portfolios, benchmarks, accounts
+Bridge Tables: portfolio-security relationships
+Lookup Tables: currency codes, sector classifications
+
+Domain Classification
+
+Equities: stock data, market data, corporate actions
+Fixed Income: bond data, yield curves, credit ratings
+Derivatives: options, futures, swaps data
+Alternatives: private equity, real estate, commodities
+Portfolio: holdings, allocations, performance
+Risk: exposures, VaR, stress test results
+
+Security Features
+
+Row-level security based on user permissions
+Column-level access controls for sensitive data
+Audit logging for all data access
+Data masking for PII fields
+Query approval workflow for sensitive operations
+
+Technical Implementation
+Authentication & Authorization
+
+JWT-based authentication
+Role-based access control (RBAC)
+Fine-grained permissions per table/column
+API key management for service accounts
+
+Performance Optimization
+
+Query result caching (Redis)
+Connection pooling for databases
+Query optimization suggestions
+Automatic query rewriting for performance
+Materialized view recommendations
+
+Monitoring & Observability
+
+Query performance metrics
+Cost tracking per user/team
+Usage analytics and reporting
+Error rate monitoring
+SLA compliance tracking
+
+Data Governance
+
+Data lineage tracking
+Schema change notifications
+Data quality metrics
+Retention policy enforcement
+Compliance reporting (SOX, GDPR)
+
+Error Handling
+Standard HTTP Status Codes
+
+200: Success
+400: Bad request (invalid SQL, missing parameters)
+401: Unauthorized (invalid credentials)
+403: Forbidden (insufficient permissions)
+404: Not found (table/database doesn't exist)
+429: Rate limit exceeded
+500: Internal server error
+
+Error Response Format
+json{
+  "error": {
+    "code": "INVALID_SQL",
+    "message": "Table 'nonexistent_table' not found",
+    "details": "Check table name and database access permissions",
+    "request_id": "req_12345"
+  }
+}
+Rate Limiting & Quotas
+
+API calls per minute/hour limits
+Query execution time limits
+Data scan volume limits
+Concurrent query limits per user
+Export job frequency limits
+
+This design provides comprehensive access to your investment data while maintaining security, performance, and governance requirements.
