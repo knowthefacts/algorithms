@@ -1,0 +1,11 @@
+# Configure Lake Formation to use Lake Formation permissions by default
+aws lakeformation put-data-lake-settings \
+    --data-lake-settings '{
+        "DataLakeAdmins": [
+            {
+                "DataLakePrincipalIdentifier": "arn:aws:iam::YOUR-ACCOUNT-ID:user/YOUR-USERNAME"
+            }
+        ],
+        "CreateDatabaseDefaultPermissions": [],
+        "CreateTableDefaultPermissions": []
+    }'
