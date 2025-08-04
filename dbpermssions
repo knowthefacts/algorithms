@@ -9,3 +9,11 @@ aws lakeformation put-data-lake-settings \
         "CreateDatabaseDefaultPermissions": [],
         "CreateTableDefaultPermissions": []
     }'
+
+# Export to JSON
+aws lakeformation list-permissions --max-results 1000 > lakeformation-permissions.json
+
+# Extract specific fields
+aws lakeformation list-permissions \
+    --query 'PrincipalResourcePermissions[*].[Principal.DataLakePrincipalIdentifier,Resource,Permissions]' \
+    --output table > permissions-summary.txt
