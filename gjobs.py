@@ -211,21 +211,31 @@ class GlueCostCalculator:
 
 def main():
     """Example usage"""
-    # Initialize calculator
-    calculator = GlueCostCalculator(region_name='us-east-1')  # Change region as needed
+    # Initialize calculator with parallel processing
+    # max_workers: Number of concurrent threads (adjust based on AWS API limits and your needs)
+    calculator = GlueCostCalculator(
+        region_name='us-east-1',  # Change region as needed
+        max_workers=10            # Adjust based on your requirements (5-20 recommended)
+    )
     
     # Calculate costs from CSV
     csv_file_path = 'glue_jobs.csv'  # Path to your CSV file
     job_name_column = 'job_name'     # Column name containing job names
     
     try:
+        start_time = time.time()
+        
         results_df = calculator.calculate_costs_from_csv(
             csv_file_path=csv_file_path,
             job_name_column=job_name_column,
             output_csv='glue_costs_august_2025.csv'  # Optional: save results to CSV
         )
         
-        print("\n=== AWS Glue Job Costs for August 2025 ===")
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        print(f"\n=== AWS Glue Job Costs for August 2025 ===")
+        print(f"Processing completed in {total_time:.2f} seconds")
         print(results_df.to_string(index=False))
         print(f"\nTotal Cost: ${results_df['costaugusttotal'].sum():.2f}")
         
